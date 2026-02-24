@@ -1,0 +1,9 @@
+#!/bin/zsh
+LAUNCHER="/Users/hfraser/Documents/New project/Run Preppy.command"
+
+if [ ! -f "$LAUNCHER" ]; then
+  /usr/bin/osascript -e 'display alert "Preppy launcher missing" message "Run Preppy.command was not found at the expected path." as critical'
+  exit 1
+fi
+
+/usr/bin/open "$LAUNCHER"

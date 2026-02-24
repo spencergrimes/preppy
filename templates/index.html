@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Preppy</title>
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='preppy-logo.svg') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <h1 class="brand">
+          <img src="{{ url_for('static', filename='preppy-logo.svg') }}" alt="Preppy logo" class="brand-logo" />
+          <span>Preppy</span>
+        </h1>
+        <p>Prep flow + setlist + export</p>
+      </header>
+
+      <nav class="tabs" role="tablist" aria-label="Main tabs">
+        <button class="tab active" data-tab="library" role="tab" aria-selected="true">Library</button>
+        <button class="tab" data-tab="new-song" role="tab" aria-selected="false">New Song</button>
+        <button class="tab" data-tab="setlists" role="tab" aria-selected="false">Setlists</button>
+      </nav>
+
+      <main>
+        <section id="library" class="panel active" role="tabpanel">
+          <h2>Song Library</h2>
+          <p>Search and manage songs and arrangements.</p>
+
+          <div class="settings-card">
+            <div class="song-stub-head">
+              <h3>Saved Songs</h3>
+              <span id="library-count" class="hint"></span>
+            </div>
+            <div class="stub-meta-grid">
+              <label>
+                Title Search
+                <input id="search-title" type="text" placeholder="Song title" />
+              </label>
+              <label>
+                Artist Search
+                <input id="search-artist" type="text" placeholder="Artist" />
+              </label>
+              <label>
+                Arrangement Search
+                <input id="search-arrangement" type="text" placeholder="Arrangement name" />
+              </label>
+              <label>
+                Key Filter
+                <input id="search-key" type="text" placeholder="Key (e.g. D)" />
+              </label>
+              <label>
+                BPM Filter
+                <input id="search-bpm" type="text" placeholder="BPM (e.g. 95)" />
+              </label>
+            </div>
+            <div id="library-list" class="saved-song-list"></div>
+          </div>
+        </section>
+
+        <section id="new-song" class="panel" role="tabpanel" hidden>
+          <h2>New Song</h2>
+          <p>Upload a chart or start blank. You can also drag a PDF anywhere on this page.</p>
+
+          <div class="settings-card">
+            <div class="song-stub-head">
+              <h3>Upload Chart</h3>
+              <button id="new-blank-song" type="button">New Blank Song</button>
+            </div>
+            <form id="chart-upload-form" class="chart-upload-form">
+              <label>
+                Chord Chart (PDF)
+                <input id="chart-file" name="chart" type="file" accept="application/pdf,.pdf" />
+              </label>
+              <button id="chart-submit" type="submit">Upload</button>
+            </form>
+            <p id="chart-status" class="save-status" aria-live="polite"></p>
+          </div>
+
+          <div id="song-stub" class="settings-card" hidden>
+            <div class="song-stub-head">
+              <h3>Song Editor</h3>
+              <div class="section-actions">
+                <button id="save-song" type="button">Save Song / Arrangement</button>
+                <button id="add-section" type="button">Add Empty Section</button>
+              </div>
+            </div>
+
+            <div class="stub-meta-grid">
+              <label>
+                Song Title
+                <input id="stub-title" type="text" />
+              </label>
+              <label>
+                Artist
+                <input id="stub-artist" type="text" />
+              </label>
+              <label>
+                Arrangement
+                <input id="stub-arrangement" type="text" placeholder="Main / Acoustic / Alt Key" />
+              </label>
+              <label>
+                Key
+                <input id="stub-key" type="text" />
+              </label>
+              <label>
+                BPM
+                <input id="stub-bpm" type="text" />
+              </label>
+            </div>
+
+            <h4>Quick Add Sections</h4>
+            <div id="section-palette" class="section-palette"></div>
+
+            <h4>Song Flow</h4>
+            <div id="stub-sections" class="stub-sections"></div>
+            <p class="hint">Flow: set arrow dynamic, type notes, press Enter to jump to next section notes.</p>
+          </div>
+        </section>
+
+        <section id="setlists" class="panel" role="tabpanel" hidden>
+          <h2>Setlists</h2>
+          <p>Build your service order and export prep sheet.</p>
+
+          <div class="settings-card">
+            <h3>Create Setlist</h3>
+            <div class="stub-meta-grid">
+              <label>
+                Service Date
+                <input id="setlist-date" type="date" />
+              </label>
+              <label>
+                Service Name
+                <input id="setlist-name" type="text" placeholder="Auto from date" />
+              </label>
+            </div>
+            <p id="service-date-display" class="hint"></p>
+            <div class="stub-meta-grid">
+              <label>
+                Recall Saved Setlist
+                <select id="setlist-recall-select">
+                  <option value="">Select saved setlist...</option>
+                </select>
+              </label>
+              <div class="section-actions">
+                <button id="setlist-recall-load" type="button">Load Selected</button>
+                <button id="setlist-recall-delete" type="button">Delete Selected</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-card">
+            <h3>Add Songs</h3>
+            <label>
+              Search Library
+              <input id="setlist-search" type="text" placeholder="Title, artist, arrangement, key, bpm" />
+            </label>
+            <div id="setlist-song-picker" class="saved-song-list"></div>
+          </div>
+
+          <div class="settings-card">
+            <h3>Current Setlist</h3>
+            <div id="setlist-items" class="saved-song-list"></div>
+            <div class="settings-actions">
+              <button id="generate-prep-doc" type="button">Generate Prep Sheet</button>
+              <button id="download-prep-docx" type="button">Download .docx</button>
+            </div>
+            <p id="setlist-status" class="save-status" aria-live="polite"></p>
+          </div>
+
+          <div class="settings-card">
+            <h3>Generated Prep Sheet</h3>
+            <div id="setlist-output" class="doc-output" contenteditable="true" spellcheck="false"></div>
+          </div>
+
+          <div class="settings-card">
+            <div class="song-stub-head">
+              <h3>Setlist History</h3>
+              <button id="save-current-setlist" type="button">Save Current Setlist</button>
+            </div>
+            <div class="stub-meta-grid">
+              <label>
+                Search Date / Name
+                <input id="setlist-history-search" type="text" placeholder="November 2025, 11/23/2025, Sunday..." />
+              </label>
+              <label>
+                Month
+                <select id="setlist-history-month">
+                  <option value="">All Months</option>
+                  <option value="1">January</option>
+                  <option value="2">February</option>
+                  <option value="3">March</option>
+                  <option value="4">April</option>
+                  <option value="5">May</option>
+                  <option value="6">June</option>
+                  <option value="7">July</option>
+                  <option value="8">August</option>
+                  <option value="9">September</option>
+                  <option value="10">October</option>
+                  <option value="11">November</option>
+                  <option value="12">December</option>
+                </select>
+              </label>
+              <label>
+                Year
+                <input id="setlist-history-year" type="number" placeholder="2026" min="2000" max="2100" />
+              </label>
+            </div>
+            <div id="setlist-history-list" class="saved-song-list"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+  </body>
+</html>
