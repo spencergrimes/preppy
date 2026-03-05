@@ -1736,6 +1736,9 @@ function renderSetlistUI() {
       const subtitle = `${song.artist || ""} | ${arrangement.name || "Arrangement"}${arrangement.key ? ` - ${arrangement.key}` : ""}${arrangement.bpm ? ` - ${arrangement.bpm} BPM` : ""}`;
       info.innerHTML = `<strong>${escapeHtml(song.title || "Untitled")}</strong><span>${escapeHtml(subtitle)}</span>`;
 
+      const actions = document.createElement("div");
+      actions.className = "section-actions";
+
       const add = document.createElement("button");
       add.type = "button";
       add.textContent = "Add";
@@ -1744,7 +1747,16 @@ function renderSetlistUI() {
         renderSetlistUI();
       });
 
-      row.append(info, add);
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.textContent = "Edit";
+      edit.addEventListener("click", () => {
+        loadArrangement(song.id, arrangement.id);
+        activateTab("new-song");
+      });
+
+      actions.append(add, edit);
+      row.append(info, actions);
       picker.appendChild(row);
     });
   }
