@@ -1721,13 +1721,19 @@ function renderSetlistUI() {
     });
   });
 
+  const PICKER_DEFAULT_COUNT = 3;
+  const isSearching = search.length > 0;
+
   if (!candidateArrangements.length) {
     const empty = document.createElement("p");
     empty.className = "hint";
-    empty.textContent = "No arrangements match search.";
+    empty.textContent = isSearching ? "No arrangements match search." : "No songs in library yet.";
     picker.appendChild(empty);
   } else {
-    candidateArrangements.forEach(({ song, arrangement }) => {
+    const visibleCount = isSearching ? candidateArrangements.length : PICKER_DEFAULT_COUNT;
+    const visible = candidateArrangements.slice(0, visibleCount);
+
+    visible.forEach(({ song, arrangement }) => {
       const row = document.createElement("div");
       row.className = "saved-song-row";
 
@@ -1735,9 +1741,6 @@ function renderSetlistUI() {
       info.className = "saved-song-info";
       const subtitle = `${song.artist || ""} | ${arrangement.name || "Arrangement"}${arrangement.key ? ` - ${arrangement.key}` : ""}${arrangement.bpm ? ` - ${arrangement.bpm} BPM` : ""}`;
       info.innerHTML = `<strong>${escapeHtml(song.title || "Untitled")}</strong><span>${escapeHtml(subtitle)}</span>`;
-
-      const actions = document.createElement("div");
-      actions.className = "section-actions";
 
       const add = document.createElement("button");
       add.type = "button";
@@ -1747,18 +1750,40 @@ function renderSetlistUI() {
         renderSetlistUI();
       });
 
-      const edit = document.createElement("button");
-      edit.type = "button";
-      edit.textContent = "Edit";
-      edit.addEventListener("click", () => {
-        loadArrangement(song.id, arrangement.id);
-        activateTab("new-song");
-      });
-
-      actions.append(add, edit);
-      row.append(info, actions);
+      row.append(info, add);
       picker.appendChild(row);
     });
+
+    if (!isSearching && candidateArrangements.length > PICKER_DEFAULT_COUNT) {
+      const showMore = document.createElement("button");
+      showMore.type = "button";
+      showMore.className = "btn-link";
+      showMore.textContent = `Show all (${candidateArrangements.length})`;
+      showMore.addEventListener("click", () => {
+        showMore.remove();
+        candidateArrangements.slice(PICKER_DEFAULT_COUNT).forEach(({ song, arrangement }) => {
+          const row = document.createElement("div");
+          row.className = "saved-song-row";
+
+          const info = document.createElement("div");
+          info.className = "saved-song-info";
+          const subtitle = `${song.artist || ""} | ${arrangement.name || "Arrangement"}${arrangement.key ? ` - ${arrangement.key}` : ""}${arrangement.bpm ? ` - ${arrangement.bpm} BPM` : ""}`;
+          info.innerHTML = `<strong>${escapeHtml(song.title || "Untitled")}</strong><span>${escapeHtml(subtitle)}</span>`;
+
+          const add = document.createElement("button");
+          add.type = "button";
+          add.textContent = "Add";
+          add.addEventListener("click", () => {
+            setlistState.items.push({ songId: song.id, arrangementId: arrangement.id });
+            renderSetlistUI();
+          });
+
+          row.append(info, add);
+          picker.appendChild(row);
+        });
+      });
+      picker.appendChild(showMore);
+    }
   }
 
   if (!setlistState.items.length) {
@@ -1831,6 +1856,16 @@ function renderSetlistUI() {
       renderSetlistUI();
     });
 
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "icon-action";
+    edit.textContent = "✎";
+    edit.title = "Edit arrangement";
+    edit.addEventListener("click", () => {
+      loadArrangement(resolved.song.id, resolved.arrangement.id);
+      activateTab("new-song");
+    });
+
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "icon-action";
@@ -1841,7 +1876,7 @@ function renderSetlistUI() {
       renderSetlistUI();
     });
 
-    actions.append(duplicate, remove);
+    actions.append(duplicate, edit, remove);
     row.append(grabber, info, actions);
     items.appendChild(row);
   });

@@ -620,3 +620,13 @@ button:disabled {
   border-left: 2px solid var(--line);
   margin-bottom: 0.5rem;
 }
+
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0.4rem 0;
+  font-size: 0.9rem;
+  text-decoration: underline;
+}
