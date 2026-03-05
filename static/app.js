@@ -771,7 +771,7 @@ function closePcoImportModal() {
 async function loadPcoPlans() {
   const body = document.getElementById("pco-modal-body");
   if (!body) return;
-  body.innerHTML = "<p class='hint'>Loading upcoming plans...</p>";
+  body.innerHTML = "<div class='spinner-wrap'><div class='spinner'></div><p class='hint'>Loading upcoming plans...</p></div>";
   try {
     const resp = await apiFetch("/api/pco/plans");
     const plans = await resp.json();
@@ -876,7 +876,7 @@ function initPcoSongSearch() {
 
 async function searchPcoSongs(query) {
   const results = document.getElementById("pco-song-search-results");
-  results.innerHTML = "<p class='hint'>Searching...</p>";
+  results.innerHTML = "<div class='spinner-wrap'><div class='spinner'></div><p class='hint'>Searching...</p></div>";
   try {
     const resp = await apiFetch(`/api/pco/songs?q=${encodeURIComponent(query)}`);
     const songs = await resp.json();
