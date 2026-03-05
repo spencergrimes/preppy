@@ -103,6 +103,8 @@ def _pco_upload_file(uid, filename, file_bytes, content_type):
     )
     resp.raise_for_status()
     data = resp.json().get("data", {})
+    if isinstance(data, list):
+        data = data[0] if data else {}
     upload_id = data.get("id") or data.get("attributes", {}).get("id")
     if not upload_id:
         raise RuntimeError("PCO file upload did not return an identifier")
