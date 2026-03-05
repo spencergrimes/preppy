@@ -791,41 +791,96 @@ async function loadPcoPlans() {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.textContent = "Import";
-      btn.addEventListener("click", async () => {
-        btn.disabled = true;
-        btn.textContent = "Importing...";
-        try {
-          const importResp = await apiFetch(`/api/pco/import/${plan.id}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ serviceTypeId: plan.serviceTypeId, date: plan.date, title: plan.title }),
-          });
-          const { setlistId } = await importResp.json();
-          // Reload data from server
-          [songLibrary, savedSetlists] = await Promise.all([
-            apiFetch("/api/songs").then((r) => r.json()),
-            apiFetch("/api/setlists").then((r) => r.json()),
-          ]);
-          closePcoImportModal();
-          // Load the newly imported setlist
-          loadSetlistById(setlistId);
-          activateTab("setlists");
-          renderLibraryList();
-          renderSetlistUI();
-          renderSetlistHistory();
-          renderSetlistQuickPick();
-        } catch (e) {
-          btn.textContent = "Import";
-          btn.disabled = false;
-          alert(`Import failed: ${e.message}`);
-        }
-      });
+      btn.addEventListener("click", () => importPcoPlan(plan, btn));
       row.append(info, btn);
       list.appendChild(row);
     });
     body.appendChild(list);
   } catch (e) {
     body.innerHTML = `<p class='hint'>Failed to load plans: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function importPcoPlan(plan, btn, forceUpdate = false) {
+  btn.disabled = true;
+  btn.textContent = forceUpdate ? "Updating..." : "Importing...";
+  try {
+    const importResp = await apiFetch(`/api/pco/import/${plan.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        serviceTypeId: plan.serviceTypeId,
+        date: plan.date,
+        title: plan.title,
+        update: forceUpdate,
+      }),
+    });
+    const data = await importResp.json();
+
+    if (data.exists && !forceUpdate) {
+      // Already imported — prompt user
+      btn.textContent = "Import";
+      btn.disabled = false;
+      const row = btn.closest(".saved-song-row");
+      // Remove any previous prompt
+      const prev = row.parentElement.querySelector(`.pco-exists-prompt[data-plan="${plan.id}"]`);
+      if (prev) prev.remove();
+
+      const prompt = document.createElement("div");
+      prompt.className = "pco-exists-prompt";
+      prompt.dataset.plan = plan.id;
+      prompt.innerHTML = `<p class="hint">This plan has already been imported.</p>`;
+
+      const actions = document.createElement("div");
+      actions.className = "section-actions";
+
+      const loadBtn = document.createElement("button");
+      loadBtn.type = "button";
+      loadBtn.textContent = "Load Existing";
+      loadBtn.addEventListener("click", async () => {
+        [songLibrary, savedSetlists] = await Promise.all([
+          apiFetch("/api/songs").then((r) => r.json()),
+          apiFetch("/api/setlists").then((r) => r.json()),
+        ]);
+        closePcoImportModal();
+        loadSetlistById(data.setlistId);
+        activateTab("setlists");
+        renderLibraryList();
+        renderSetlistUI();
+        renderSetlistHistory();
+        renderSetlistQuickPick();
+      });
+
+      const updateBtn = document.createElement("button");
+      updateBtn.type = "button";
+      updateBtn.textContent = "Update from PCO";
+      updateBtn.addEventListener("click", () => {
+        prompt.remove();
+        importPcoPlan(plan, btn, true);
+      });
+
+      actions.append(loadBtn, updateBtn);
+      prompt.appendChild(actions);
+      row.after(prompt);
+      return;
+    }
+
+    // Success — reload and navigate
+    [songLibrary, savedSetlists] = await Promise.all([
+      apiFetch("/api/songs").then((r) => r.json()),
+      apiFetch("/api/setlists").then((r) => r.json()),
+    ]);
+    closePcoImportModal();
+    loadSetlistById(data.setlistId);
+    activateTab("setlists");
+    renderLibraryList();
+    renderSetlistUI();
+    renderSetlistHistory();
+    renderSetlistQuickPick();
+  } catch (e) {
+    btn.textContent = "Import";
+    btn.disabled = false;
+    alert(`Import failed: ${e.message}`);
   }
 }
 

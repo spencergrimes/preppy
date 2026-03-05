@@ -315,8 +315,25 @@ def import_plan(pco_plan_id):
     plan_date = body.get("date", "")
     plan_title = body.get("title", "")
 
+    force_update = body.get("update", False)
+
     if not service_type_id:
         return jsonify({"error": "serviceTypeId is required"}), 400
+
+    # Check if already imported
+    if not force_update:
+        with Db() as cur:
+            cur.execute(
+                "SELECT id FROM setlists WHERE user_id=%s AND pco_plan_id=%s",
+                (uid, pco_plan_id),
+            )
+            existing = cur.fetchone()
+            if existing:
+                return jsonify({
+                    "exists": True,
+                    "setlistId": existing["id"],
+                    "message": "This plan has already been imported.",
+                }), 200
 
     try:
         items_data = _pco_get(
@@ -388,14 +405,30 @@ def import_plan(pco_plan_id):
                 if label:
                     setlist_items.append({"type": "header", "label": label})
 
-        # Create setlist
+        # Create or update setlist
         setlist_name = plan_title or (f"Service {plan_date}" if plan_date else "Imported Plan")
+
+        # Check for existing setlist to update
         cur.execute(
-            "INSERT INTO setlists (user_id, pco_plan_id, pco_service_type_id, name, date) "
-            "VALUES (%s, %s, %s, %s, %s) RETURNING id",
-            (uid, pco_plan_id, service_type_id, setlist_name, plan_date or None),
+            "SELECT id FROM setlists WHERE user_id=%s AND pco_plan_id=%s",
+            (uid, pco_plan_id),
         )
-        sl_id = cur.fetchone()["id"]
+        existing_sl = cur.fetchone()
+
+        if existing_sl and force_update:
+            sl_id = existing_sl["id"]
+            cur.execute(
+                "UPDATE setlists SET name=%s, date=%s, updated_at=now() WHERE id=%s",
+                (setlist_name, plan_date or None, sl_id),
+            )
+            cur.execute("DELETE FROM setlist_items WHERE setlist_id=%s", (sl_id,))
+        else:
+            cur.execute(
+                "INSERT INTO setlists (user_id, pco_plan_id, pco_service_type_id, name, date) "
+                "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                (uid, pco_plan_id, service_type_id, setlist_name, plan_date or None),
+            )
+            sl_id = cur.fetchone()["id"]
 
         for pos, sl_item in enumerate(setlist_items):
             if sl_item["type"] == "song":
