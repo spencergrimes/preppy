@@ -347,8 +347,8 @@ def import_plan(pco_plan_id):
                 song_attrs = included_songs.get(pco_song_id, {}).get("attributes", {})
                 arr_attrs = included_arrs.get(pco_arr_id, {}).get("attributes", {}) if pco_arr_id else {}
 
-                title = song_attrs.get("title", "").strip() or "Untitled"
-                artist = song_attrs.get("author", "").strip()
+                title = (song_attrs.get("title") or "").strip() or "Untitled"
+                artist = (song_attrs.get("author") or "").strip()
                 arr_name = arr_attrs.get("name", "Main").strip() or "Main"
                 key = arr_attrs.get("chord_chart_key", "") or arr_attrs.get("key", "") or ""
                 bpm = str(arr_attrs.get("bpm") or "")
@@ -382,7 +382,7 @@ def import_plan(pco_plan_id):
                 setlist_items.append({"type": "song", "arr_id": arr_db_id})
 
             elif item_type in ("header", "item"):
-                label = item["attributes"].get("title", "").strip()
+                label = (item["attributes"].get("title") or "").strip()
                 if label:
                     setlist_items.append({"type": "header", "label": label})
 
@@ -487,8 +487,8 @@ def import_pco_song(pco_song_id):
         return jsonify({"error": f"PCO API error: {e.response.status_code}"}), 502
 
     song_attrs = song_data.get("data", {}).get("attributes", {})
-    title = song_attrs.get("title", "").strip() or "Untitled"
-    artist = song_attrs.get("author", "").strip()
+    title = (song_attrs.get("title") or "").strip() or "Untitled"
+    artist = (song_attrs.get("author") or "").strip()
 
     # Fetch arrangements
     try:
@@ -642,8 +642,8 @@ def sync_plan(pco_plan_id):
                 song_attrs = included_songs.get(pco_song_id, {}).get("attributes", {})
                 arr_attrs = included_arrs.get(pco_arr_id, {}).get("attributes", {}) if pco_arr_id else {}
 
-                title = song_attrs.get("title", "").strip() or "Untitled"
-                artist = song_attrs.get("author", "").strip()
+                title = (song_attrs.get("title") or "").strip() or "Untitled"
+                artist = (song_attrs.get("author") or "").strip()
                 arr_name = arr_attrs.get("name", "Main").strip() or "Main"
                 key = arr_attrs.get("chord_chart_key", "") or arr_attrs.get("key", "") or ""
                 bpm = str(arr_attrs.get("bpm") or "")
@@ -662,7 +662,7 @@ def sync_plan(pco_plan_id):
                 new_items.append({"type": "song", "arr_id": arr_db_id})
 
             elif item_type in ("header", "item"):
-                label = item["attributes"].get("title", "").strip()
+                label = (item["attributes"].get("title") or "").strip()
                 if label:
                     new_items.append({"type": "header", "label": label})
 
