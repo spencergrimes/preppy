@@ -11,10 +11,48 @@ from flask import Blueprint, jsonify, request
 from .auth import login_required, current_user_id
 from .db import Db
 
+# Lazy import helpers from app.py for chart parsing
+_parse_fns = {}
+
+def _get_parse_fns():
+    if not _parse_fns:
+        from app import normalize_lines, infer_sections, to_section_label
+        _parse_fns["normalize_lines"] = normalize_lines
+        _parse_fns["infer_sections"] = infer_sections
+        _parse_fns["to_section_label"] = to_section_label
+    return _parse_fns
+
 pco_bp = Blueprint("pco", __name__)
 
 PCO_API = "https://api.planningcenteronline.com"
 PCO_TOKEN_URL = "https://api.planningcenteronline.com/oauth/token"
+
+import re
+_SEQ_LABEL_RE = re.compile(
+    r"^(VERSE|CHORUS|PRE[- ]?CHORUS|BRIDGE|INTRO|OUTRO|TAG|INSTRUMENTAL|INTERLUDE|TURN|HOLD|VAMP)"
+    r"\s*(\d+)?$",
+    re.IGNORECASE,
+)
+
+def _shorthand_label(raw_label):
+    """Convert a PCO sequence label like 'Verse 1' to shorthand 'V1'."""
+    fns = _get_parse_fns()
+    label = str(raw_label).strip()
+    m = _SEQ_LABEL_RE.match(label)
+    if m:
+        token = m.group(1).upper().replace("-", " ").replace("  ", " ")
+        num = (m.group(2) or "").strip()
+        short = fns["to_section_label"](token, num)
+        if short:
+            return short
+    return label
+
+
+def _sections_from_chord_chart(chord_chart_text):
+    """Parse a PCO chord chart text into shorthand sections."""
+    fns = _get_parse_fns()
+    lines = fns["normalize_lines"](chord_chart_text)
+    return fns["infer_sections"](lines)
 
 
 # ---------------------------------------------------------------------------
@@ -374,27 +412,41 @@ def import_plan(pco_plan_id):
 
                 arr_db_id = _upsert_pco_song(cur, uid, pco_song_id, title, artist, pco_arr_id, arr_name, key, bpm)
 
-                # Try to fetch arrangement sequence and pre-populate sections
+                # Pre-populate sections from chord chart or sequence
                 if pco_arr_id:
                     try:
                         arr_detail = _pco_get(
                             uid,
                             f"/services/v2/songs/{pco_song_id}/arrangements/{pco_arr_id}",
                         )
-                        sequence = arr_detail.get("data", {}).get("attributes", {}).get("sequence", [])
-                        if sequence:
-                            # Only populate if arrangement has no sections yet
-                            cur.execute(
-                                "SELECT count(*) as cnt FROM sections WHERE arrangement_id=%s",
-                                (arr_db_id,),
-                            )
-                            if cur.fetchone()["cnt"] == 0:
-                                for pos, label in enumerate(sequence):
-                                    cur.execute(
-                                        "INSERT INTO sections (arrangement_id, position, label, energy, notes) "
-                                        "VALUES (%s, %s, %s, %s, %s)",
-                                        (arr_db_id, pos, str(label), "", ""),
-                                    )
+                        detail_attrs = arr_detail.get("data", {}).get("attributes", {})
+                        chord_chart = detail_attrs.get("chord_chart") or ""
+                        sequence = detail_attrs.get("sequence", []) or []
+
+                        # Only populate if arrangement has no sections yet
+                        cur.execute(
+                            "SELECT count(*) as cnt FROM sections WHERE arrangement_id=%s",
+                            (arr_db_id,),
+                        )
+                        if cur.fetchone()["cnt"] == 0:
+                            # Strategy 1: Parse chord chart text for shorthand sections
+                            sections = []
+                            if chord_chart.strip():
+                                sections = _sections_from_chord_chart(chord_chart)
+
+                            # Strategy 2: Convert PCO sequence labels to shorthand
+                            if not sections and sequence:
+                                sections = [
+                                    {"label": _shorthand_label(lbl), "energy": "", "notes": ""}
+                                    for lbl in sequence
+                                ]
+
+                            for pos, sec in enumerate(sections):
+                                cur.execute(
+                                    "INSERT INTO sections (arrangement_id, position, label, energy, notes) "
+                                    "VALUES (%s, %s, %s, %s, %s)",
+                                    (arr_db_id, pos, sec["label"], sec.get("energy", ""), sec.get("notes", "")),
+                                )
                     except requests.HTTPError:
                         pass  # Non-critical: skip section pre-population
 
@@ -544,14 +596,39 @@ def import_pco_song(pco_song_id):
     with Db() as cur:
         for arr in arrangements:
             arr_attrs = arr["attributes"]
+            pco_arr_id = arr["id"]
             arr_db_id = _upsert_pco_song(
                 cur, uid, pco_song_id, title, artist,
-                arr["id"],
+                pco_arr_id,
                 arr_attrs.get("name", "Main").strip() or "Main",
                 arr_attrs.get("chord_chart_key", "") or arr_attrs.get("key", "") or "",
                 str(arr_attrs.get("bpm") or ""),
             )
             arrangement_ids.append(arr_db_id)
+
+            # Parse chord chart or sequence for section pre-population
+            chord_chart = arr_attrs.get("chord_chart") or ""
+            sequence = arr_attrs.get("sequence", []) or []
+
+            cur.execute(
+                "SELECT count(*) as cnt FROM sections WHERE arrangement_id=%s",
+                (arr_db_id,),
+            )
+            if cur.fetchone()["cnt"] == 0:
+                sections = []
+                if chord_chart.strip():
+                    sections = _sections_from_chord_chart(chord_chart)
+                if not sections and sequence:
+                    sections = [
+                        {"label": _shorthand_label(lbl), "energy": "", "notes": ""}
+                        for lbl in sequence
+                    ]
+                for pos, sec in enumerate(sections):
+                    cur.execute(
+                        "INSERT INTO sections (arrangement_id, position, label, energy, notes) "
+                        "VALUES (%s, %s, %s, %s, %s)",
+                        (arr_db_id, pos, sec["label"], sec.get("energy", ""), sec.get("notes", "")),
+                    )
 
         # Get the song DB id
         cur.execute(
@@ -572,11 +649,11 @@ def import_pco_song(pco_song_id):
 @pco_bp.post("/api/pco/plans/<pco_plan_id>/upload-prep-sheet")
 @login_required
 def upload_prep_sheet(pco_plan_id):
-    """Upload a .docx prep sheet as an attachment to a PCO plan (two-step)."""
+    """Upload a prep sheet PDF as an attachment to a PCO plan (two-step)."""
     uid = current_user_id()
     file = request.files.get("file")
     service_type_id = request.form.get("serviceTypeId")
-    filename = request.form.get("filename", "Prep Sheet.docx")
+    filename = request.form.get("filename", "Prep Sheet.pdf")
 
     if not file:
         return jsonify({"error": "No file provided"}), 400
@@ -584,7 +661,7 @@ def upload_prep_sheet(pco_plan_id):
         return jsonify({"error": "serviceTypeId is required"}), 400
 
     file_bytes = file.read()
-    content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    content_type = file.content_type or "application/pdf"
 
     try:
         # Step 1: Upload file to PCO's upload service → get UUID
@@ -693,6 +770,39 @@ def sync_plan(pco_plan_id):
 
                 if arr_db_id not in old_arr_ids:
                     added += 1
+
+                    # Pre-populate sections for newly added songs
+                    if pco_arr_id:
+                        try:
+                            arr_detail = _pco_get(
+                                uid,
+                                f"/services/v2/songs/{pco_song_id}/arrangements/{pco_arr_id}",
+                            )
+                            detail_attrs = arr_detail.get("data", {}).get("attributes", {})
+                            chord_chart = detail_attrs.get("chord_chart") or ""
+                            sequence = detail_attrs.get("sequence", []) or []
+
+                            cur.execute(
+                                "SELECT count(*) as cnt FROM sections WHERE arrangement_id=%s",
+                                (arr_db_id,),
+                            )
+                            if cur.fetchone()["cnt"] == 0:
+                                sections = []
+                                if chord_chart.strip():
+                                    sections = _sections_from_chord_chart(chord_chart)
+                                if not sections and sequence:
+                                    sections = [
+                                        {"label": _shorthand_label(lbl), "energy": "", "notes": ""}
+                                        for lbl in sequence
+                                    ]
+                                for pos, sec in enumerate(sections):
+                                    cur.execute(
+                                        "INSERT INTO sections (arrangement_id, position, label, energy, notes) "
+                                        "VALUES (%s, %s, %s, %s, %s)",
+                                        (arr_db_id, pos, sec["label"], sec.get("energy", ""), sec.get("notes", "")),
+                                    )
+                        except requests.HTTPError:
+                            pass
 
                 new_items.append({"type": "song", "arr_id": arr_db_id})
 
