@@ -9,8 +9,20 @@ import pytest
 import responses
 from tests.conftest import requires_db
 
+import re as _re
+
 PCO_API = "https://api.planningcenteronline.com"
 PCO_UPLOAD = "https://upload.planningcenteronline.com/v2/files"
+
+# Pattern to catch any arrangements/.../attachments request (used by _sections_from_pco_pdf)
+_ATTACHMENTS_RE = _re.compile(
+    r"https://api\.planningcenteronline\.com/services/v2/songs/.+/arrangements/.+/attachments"
+)
+
+
+def _mock_all_attachments():
+    """Mock the attachments endpoint for any song/arrangement combo (returns empty)."""
+    responses.get(_ATTACHMENTS_RE, json={"data": []})
 
 
 def _mock_service_types():
@@ -76,10 +88,18 @@ def _mock_plan_items(service_type_id="111", plan_id="plan-1"):
     )
 
 
-def _mock_arrangement_detail(song_id, arr_id, sequence=None):
+def _mock_arrangement_detail(song_id, arr_id, sequence=None, chord_chart="", attachments=None):
     responses.get(
         f"{PCO_API}/services/v2/songs/{song_id}/arrangements/{arr_id}",
-        json={"data": {"attributes": {"sequence": sequence or []}}},
+        json={"data": {"attributes": {
+            "sequence": sequence or [],
+            "chord_chart": chord_chart or "",
+        }}},
+    )
+    # Mock the attachments endpoint (used by _sections_from_pco_pdf)
+    responses.get(
+        f"{PCO_API}/services/v2/songs/{song_id}/arrangements/{arr_id}/attachments",
+        json={"data": attachments or []},
     )
 
 
@@ -118,7 +138,6 @@ class TestImportPlan:
         data = resp.get_json()
         assert "setlistId" in data
 
-        # Verify setlist
         setlists = client.get("/api/setlists").get_json()
         assert len(setlists) >= 1
         sl = next(s for s in setlists if s["pco_plan_id"] == "plan-1")
@@ -134,9 +153,10 @@ class TestImportPlan:
 
     @responses.activate
     def test_import_populates_sections_from_sequence(self, db_app):
+        """Sequence labels like 'Verse 1' are converted to shorthand 'V1'."""
         client, uid = db_app
         _mock_plan_items()
-        _mock_arrangement_detail("pco-song-1", "pco-arr-1", ["Intro", "V1", "C1"])
+        _mock_arrangement_detail("pco-song-1", "pco-arr-1", ["Intro", "Verse 1", "Chorus 1"])
         _mock_arrangement_detail("pco-song-2", "pco-arr-2")
 
         client.post("/api/pco/import/plan-1", json={
@@ -152,8 +172,84 @@ class TestImportPlan:
         assert arr["sections"][2]["label"] == "C1"
 
     @responses.activate
-    def test_import_is_idempotent(self, db_app):
-        """Importing the same plan twice should not duplicate songs."""
+    def test_import_populates_sections_from_chord_chart_text(self, db_app):
+        """Chord chart text is parsed into shorthand sections (strategy 2, after PDF)."""
+        client, uid = db_app
+        _mock_plan_items()
+        _mock_arrangement_detail(
+            "pco-song-1", "pco-arr-1",
+            sequence=["Verse 1", "Chorus 1"],
+            chord_chart="VERSE 1\nG D Em C\nCHORUS 1\nC G Am F\nBRIDGE 1\nEm D C",
+        )
+        _mock_arrangement_detail("pco-song-2", "pco-arr-2")
+
+        client.post("/api/pco/import/plan-1", json={
+            "serviceTypeId": "111", "date": "2026-03-08", "title": "Test",
+        })
+
+        songs = client.get("/api/songs").get_json()
+        grace = next(s for s in songs if s["title"] == "Amazing Grace")
+        arr = grace["arrangements"][0]
+        labels = [s["label"] for s in arr["sections"]]
+        assert "V1" in labels
+        assert "C1" in labels
+        assert "B1" in labels  # Only from chord chart, not in sequence
+
+    @responses.activate
+    def test_import_duplicate_returns_exists(self, db_app):
+        """Second import of same plan returns exists=True instead of creating duplicate."""
+        client, uid = db_app
+        _mock_plan_items()
+        _mock_arrangement_detail("pco-song-1", "pco-arr-1")
+        _mock_arrangement_detail("pco-song-2", "pco-arr-2")
+
+        resp1 = client.post("/api/pco/import/plan-1", json={
+            "serviceTypeId": "111", "date": "2026-03-08", "title": "Test",
+        })
+        assert resp1.status_code == 201
+        first_id = resp1.get_json()["setlistId"]
+
+        # Second import without update flag — should return exists
+        resp2 = client.post("/api/pco/import/plan-1", json={
+            "serviceTypeId": "111", "date": "2026-03-08", "title": "Test",
+        })
+        assert resp2.status_code == 200
+        data = resp2.get_json()
+        assert data["exists"] is True
+        assert data["setlistId"] == first_id
+
+    @responses.activate
+    def test_import_update_replaces_setlist(self, db_app):
+        """Import with update=True re-fetches and replaces the existing setlist."""
+        client, uid = db_app
+        _mock_plan_items()
+        _mock_arrangement_detail("pco-song-1", "pco-arr-1")
+        _mock_arrangement_detail("pco-song-2", "pco-arr-2")
+
+        resp1 = client.post("/api/pco/import/plan-1", json={
+            "serviceTypeId": "111", "date": "2026-03-08", "title": "Test",
+        })
+        first_id = resp1.get_json()["setlistId"]
+
+        # Re-import with update=True
+        _mock_plan_items()
+        _mock_arrangement_detail("pco-song-1", "pco-arr-1")
+        _mock_arrangement_detail("pco-song-2", "pco-arr-2")
+
+        resp2 = client.post("/api/pco/import/plan-1", json={
+            "serviceTypeId": "111", "date": "2026-03-08", "title": "Updated Title",
+            "update": True,
+        })
+        assert resp2.status_code == 201
+        assert resp2.get_json()["setlistId"] == first_id
+
+        setlists = client.get("/api/setlists").get_json()
+        sl = next(s for s in setlists if s["id"] == first_id)
+        assert sl["name"] == "Updated Title"
+
+    @responses.activate
+    def test_import_is_idempotent_songs(self, db_app):
+        """Force-updating the same plan should not duplicate songs."""
         client, uid = db_app
         _mock_plan_items()
         _mock_arrangement_detail("pco-song-1", "pco-arr-1")
@@ -163,17 +259,16 @@ class TestImportPlan:
             "serviceTypeId": "111", "date": "2026-03-08", "title": "Test",
         })
 
-        # Import again — need fresh mocks since responses are consumed
         _mock_plan_items()
         _mock_arrangement_detail("pco-song-1", "pco-arr-1")
         _mock_arrangement_detail("pco-song-2", "pco-arr-2")
 
         client.post("/api/pco/import/plan-1", json={
             "serviceTypeId": "111", "date": "2026-03-08", "title": "Test",
+            "update": True,
         })
 
         songs = client.get("/api/songs").get_json()
-        # Should have 2 songs, not 4
         assert len(songs) == 2
 
 
@@ -223,6 +318,7 @@ class TestSongSearch:
     @responses.activate
     def test_import_single_arrangement(self, db_app):
         client, uid = db_app
+        _mock_all_attachments()
         responses.get(
             f"{PCO_API}/services/v2/songs/s1",
             json={"data": {"attributes": {"title": "Test Song", "author": "Test"}}},
@@ -245,6 +341,39 @@ class TestSongSearch:
         assert len(songs[0]["arrangements"]) == 1
         assert songs[0]["arrangements"][0]["key"] == "G"
 
+    @responses.activate
+    def test_import_song_parses_chord_chart(self, db_app):
+        """Single-song import should parse chord_chart text into shorthand sections."""
+        client, uid = db_app
+        _mock_all_attachments()
+        responses.get(
+            f"{PCO_API}/services/v2/songs/s1",
+            json={"data": {"attributes": {"title": "Chart Song", "author": "Artist"}}},
+        )
+        responses.get(
+            f"{PCO_API}/services/v2/songs/s1/arrangements",
+            json={"data": [
+                {
+                    "id": "a1",
+                    "attributes": {
+                        "name": "Main", "chord_chart_key": "C", "bpm": 120,
+                        "chord_chart": "INTRO\nG D\nVERSE 1\nEm C\nCHORUS 1\nG D Em C",
+                        "sequence": [],
+                    },
+                },
+            ]},
+        )
+
+        resp = client.post("/api/pco/songs/s1/import")
+        assert resp.status_code == 201
+
+        songs = client.get("/api/songs").get_json()
+        arr = songs[0]["arrangements"][0]
+        labels = [s["label"] for s in arr["sections"]]
+        assert "Intro" in labels
+        assert "V1" in labels
+        assert "C1" in labels
+
 
 @requires_db
 class TestSectionCopy:
@@ -253,8 +382,8 @@ class TestSectionCopy:
     @responses.activate
     def test_sections_copied_on_reimport(self, db_app):
         client, uid = db_app
+        _mock_all_attachments()
 
-        # First import — creates song + arrangement with no sections
         responses.get(
             f"{PCO_API}/services/v2/songs/s1",
             json={"data": {"attributes": {"title": "Grace Song", "author": "Author"}}},
@@ -268,7 +397,6 @@ class TestSectionCopy:
         resp = client.post("/api/pco/songs/s1/import")
         first_arr_id = resp.get_json()["arrangementIds"][0]
 
-        # Add sections to the first arrangement
         client.post(f"/api/arrangements/{first_arr_id}/sections", json={
             "sections": [
                 {"label": "V1", "energy": "down", "notes": "quiet"},
@@ -276,10 +404,8 @@ class TestSectionCopy:
             ],
         })
 
-        # Delete the arrangement so it gets re-created on next import
         client.delete(f"/api/arrangements/{first_arr_id}")
 
-        # Re-import — should NOT find donor (we deleted it)
         responses.get(
             f"{PCO_API}/services/v2/songs/s1",
             json={"data": {"attributes": {"title": "Grace Song", "author": "Author"}}},
@@ -291,7 +417,6 @@ class TestSectionCopy:
             ]},
         )
         resp2 = client.post("/api/pco/songs/s1/import")
-        # The arrangement was deleted, so this should create a new one with no sections
         songs = client.get("/api/songs").get_json()
         song = next(s for s in songs if s["title"] == "Grace Song")
         assert len(song["arrangements"][0]["sections"]) == 0
@@ -300,8 +425,8 @@ class TestSectionCopy:
     def test_sections_copied_when_donor_exists(self, db_app):
         """If an arrangement with the same pco_arrangement_id exists and has sections, copy them."""
         client, uid = db_app
+        _mock_all_attachments()
 
-        # Import creates arrangement
         responses.get(
             f"{PCO_API}/services/v2/songs/s2",
             json={"data": {"attributes": {"title": "Copy Test", "author": "Author"}}},
@@ -315,7 +440,6 @@ class TestSectionCopy:
         resp = client.post("/api/pco/songs/s2/import")
         arr_id = resp.get_json()["arrangementIds"][0]
 
-        # Add sections
         client.post(f"/api/arrangements/{arr_id}/sections", json={
             "sections": [
                 {"label": "Intro", "energy": "steady", "notes": "keys only"},
@@ -323,19 +447,61 @@ class TestSectionCopy:
             ],
         })
 
-        # Now import via a plan — same pco_arrangement_id "arr-copy" but a new setlist import
-        # This simulates another user or re-import creating a new arrangement row
-        # We need to trick _upsert_pco_song into creating a new row.
-        # The existing check is by pco_arrangement_id + user_id, so importing the same
-        # arrangement for the same user returns the existing one. To test the copy,
-        # we simulate by directly calling the upsert with a different arrangement ID.
-        # For a true integration test, we'd need a second user.
-
-        # Instead: verify the arrangement has sections after being imported once
         songs = client.get("/api/songs").get_json()
         song = next(s for s in songs if s["title"] == "Copy Test")
         assert len(song["arrangements"][0]["sections"]) == 2
         assert song["arrangements"][0]["sections"][0]["notes"] == "keys only"
+
+
+@requires_db
+class TestShorthandLabels:
+    """Test PCO sequence label to shorthand conversion."""
+
+    def test_shorthand_conversion(self, db_app):
+        from preppy.pco import _shorthand_label
+        assert _shorthand_label("Verse 1") == "V1"
+        assert _shorthand_label("Verse 2") == "V2"
+        assert _shorthand_label("Chorus 1") == "C1"
+        assert _shorthand_label("Chorus 2") == "C2"
+        assert _shorthand_label("Bridge 1") == "B1"
+        assert _shorthand_label("Pre-Chorus 1") == "Pre 1"
+        assert _shorthand_label("Intro") == "Intro"
+        assert _shorthand_label("Outro") == "Outro"
+        assert _shorthand_label("Instrumental") == "Instr"
+        assert _shorthand_label("Tag") == "Tag"
+        assert _shorthand_label("Turn") == "Turn"
+
+    def test_shorthand_passthrough(self, db_app):
+        """Unknown labels should pass through unchanged."""
+        from preppy.pco import _shorthand_label
+        assert _shorthand_label("Something Custom") == "Something Custom"
+        assert _shorthand_label("V1") == "V1"
+
+
+@requires_db
+class TestChordChartParsing:
+    """Test parsing chord chart text into sections."""
+
+    def test_parse_chord_chart_text(self, db_app):
+        from preppy.pco import _sections_from_chord_chart
+        sections = _sections_from_chord_chart(
+            "VERSE 1\nG D Em C\nCHORUS 1\nC G Am F\nBRIDGE 1\nEm D"
+        )
+        labels = [s["label"] for s in sections]
+        assert "V1" in labels
+        assert "C1" in labels
+        assert "B1" in labels
+
+    def test_parse_empty_chart(self, db_app):
+        from preppy.pco import _sections_from_chord_chart
+        assert _sections_from_chord_chart("") == []
+        assert _sections_from_chord_chart("   ") == []
+
+    def test_parse_chart_chords_only(self, db_app):
+        """A chart with only chord lines and no section headers yields no sections."""
+        from preppy.pco import _sections_from_chord_chart
+        sections = _sections_from_chord_chart("G D Em C\nAm F G C")
+        assert sections == []
 
 
 @requires_db
@@ -344,7 +510,6 @@ class TestSync:
     def test_sync_updates_setlist(self, db_app):
         client, uid = db_app
 
-        # First import
         _mock_plan_items()
         _mock_arrangement_detail("pco-song-1", "pco-arr-1")
         _mock_arrangement_detail("pco-song-2", "pco-arr-2")
@@ -354,7 +519,6 @@ class TestSync:
         })
         sl_id = import_resp.get_json()["setlistId"]
 
-        # Now sync — mock updated plan with one song removed, one added
         responses.get(
             f"{PCO_API}/services/v2/service_types/111/plans/plan-1/items",
             json={
@@ -384,6 +548,7 @@ class TestSync:
                 ],
             },
         )
+        _mock_arrangement_detail("pco-song-3", "pco-arr-3", ["Verse 1", "Chorus 1"])
 
         sync_resp = client.post("/api/pco/plans/plan-1/sync", json={
             "serviceTypeId": "111", "setlistId": sl_id,
@@ -393,7 +558,6 @@ class TestSync:
         assert changes["added"] == 1
         assert changes["removed"] == 1
 
-        # Verify updated setlist
         setlists = client.get("/api/setlists").get_json()
         sl = next(s for s in setlists if s["id"] == sl_id)
         song_items = [i for i in sl["items"] if i["itemType"] == "song"]
@@ -410,7 +574,6 @@ class TestUploadPrepSheet:
     def test_upload_two_step(self, db_app):
         client, uid = db_app
 
-        # Import a plan first so we have a PCO-linked setlist
         _mock_plan_items()
         _mock_arrangement_detail("pco-song-1", "pco-arr-1")
         _mock_arrangement_detail("pco-song-2", "pco-arr-2")
@@ -418,21 +581,20 @@ class TestUploadPrepSheet:
             "serviceTypeId": "111", "date": "2026-03-08", "title": "Test",
         })
 
-        # Mock PCO upload endpoints
         responses.post(
             PCO_UPLOAD,
             json={"data": {"id": "upload-uuid-123"}},
         )
         responses.post(
             f"{PCO_API}/services/v2/service_types/111/plans/plan-1/attachments",
-            json={"data": {"id": "attachment-1", "attributes": {"url": "https://pco.test/file.docx"}}},
+            json={"data": {"id": "attachment-1", "attributes": {"url": "https://pco.test/file.pdf"}}},
         )
 
         import io
         data = {
-            "file": (io.BytesIO(b"fake docx content"), "test.docx"),
+            "file": (io.BytesIO(b"%PDF-fake"), "Prep Sheet.pdf", "application/pdf"),
             "serviceTypeId": "111",
-            "filename": "Prep Sheet.docx",
+            "filename": "Prep Sheet.pdf",
         }
         resp = client.post(
             "/api/pco/plans/plan-1/upload-prep-sheet",
@@ -443,6 +605,49 @@ class TestUploadPrepSheet:
         result = resp.get_json()
         assert result["attachmentId"] == "attachment-1"
         assert "pco.test" in result["url"]
+
+    @responses.activate
+    def test_upload_with_generated_pdf(self, db_app):
+        """End-to-end: generate a real PDF via /api/export-pdf, then upload it."""
+        client, uid = db_app
+
+        _mock_plan_items()
+        _mock_arrangement_detail("pco-song-1", "pco-arr-1")
+        _mock_arrangement_detail("pco-song-2", "pco-arr-2")
+        client.post("/api/pco/import/plan-1", json={
+            "serviceTypeId": "111", "date": "2026-03-08", "title": "Test",
+        })
+
+        pdf_resp = client.post("/api/export-pdf", json={
+            "lines": ["Prep Sheet March 8, 2026", "Amazing Grace [G] - 72BPM"],
+            "filename": "Prep Sheet.pdf",
+        })
+        assert pdf_resp.status_code == 200
+        assert pdf_resp.data[:5] == b"%PDF-"
+
+        responses.post(
+            PCO_UPLOAD,
+            json={"data": {"id": "upload-uuid-789"}},
+        )
+        responses.post(
+            f"{PCO_API}/services/v2/service_types/111/plans/plan-1/attachments",
+            json={"data": {"id": "attachment-3", "attributes": {"url": "https://pco.test/prep.pdf"}}},
+        )
+
+        import io
+        data = {
+            "file": (io.BytesIO(pdf_resp.data), "Prep Sheet.pdf", "application/pdf"),
+            "serviceTypeId": "111",
+            "filename": "Prep Sheet.pdf",
+        }
+        resp = client.post(
+            "/api/pco/plans/plan-1/upload-prep-sheet",
+            data=data,
+            content_type="multipart/form-data",
+        )
+        assert resp.status_code == 200
+        result = resp.get_json()
+        assert result["attachmentId"] == "attachment-3"
 
     def test_upload_requires_file(self, db_app):
         client, uid = db_app
@@ -458,7 +663,7 @@ class TestUploadPrepSheet:
         import io
         resp = client.post(
             "/api/pco/plans/plan-1/upload-prep-sheet",
-            data={"file": (io.BytesIO(b"data"), "test.docx")},
+            data={"file": (io.BytesIO(b"data"), "test.pdf")},
             content_type="multipart/form-data",
         )
         assert resp.status_code == 400
